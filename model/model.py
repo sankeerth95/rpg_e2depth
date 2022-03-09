@@ -1,10 +1,9 @@
-from base import BaseModel
+from ..base import BaseModel
 import torch.nn as nn
 import torch
-from model.unet import UNet, UNetRecurrent
+from .unet import UNet, UNetRecurrent
 from os.path import join
-from model.submodules import ConvLSTM, ResidualBlock, ConvLayer, UpsampleConvLayer, TransposedConvLayer
-
+from .submodules import ConvLSTM, ResidualBlock, ConvLayer, UpsampleConvLayer, TransposedConvLayer
 
 class BaseE2VID(BaseModel):
     def __init__(self, config):
@@ -88,7 +87,8 @@ class E2VIDRecurrent(BaseE2VID):
                                            base_num_channels=self.base_num_channels,
                                            num_residual_blocks=self.num_residual_blocks,
                                            norm=self.norm,
-                                           use_upsample_conv=self.use_upsample_conv)
+                                           use_upsample_conv=self.use_upsample_conv,
+                                           k=config['k'])
 
     def forward(self, event_tensor, prev_states):
         """

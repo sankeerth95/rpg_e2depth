@@ -1,8 +1,8 @@
 import torch
-from model.model import *
+from ..model.model import *
 
 
-def load_model(path_to_model):
+def load_model(path_to_model, config_dict = {}):
     print('Loading model {}...'.format(path_to_model))
     raw_model = torch.load(path_to_model)
     arch = raw_model['arch']
@@ -11,6 +11,9 @@ def load_model(path_to_model):
         model_type = raw_model['model']
     except KeyError:
         model_type = raw_model['config']['model']
+
+
+    model_type.update(config_dict)
 
     print ("Model Type", model_type)
     # instantiate model
