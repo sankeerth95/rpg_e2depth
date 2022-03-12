@@ -1,30 +1,112 @@
 import numpy as np
 import torch
-from base import BaseTrainer
-from torchvision import utils
-from utils.training_utils import plot_grad_flow
+import torch.optim as optim
+import logging, math, atexit, os, json
+from ..utils.util import ensure_dir
+
+class BaseTrainer:
 
 
-class Trainer(BaseTrainer):
-    """
-    Trainer class
+    def __init__(self, model, loss, loss_params, metrics, resume, config, train_logger=None):
+        self.config = config
+        self.model = model
+        self.loss = loss
+        self.loss_params = loss_params
+        self.metrics = metrics
 
-    Note:
-        Inherited from BaseTrainer.
-        self.optimizer is by default handled by BaseTrainer based on config.
-    """
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.name = config['name']
+        self.epochs = config['trainer']['epochs']
+        self.save_freq = config['trainer']['save_freq']
+
+        self.with_cuda = config['cuda'] and torch.cuda.is_available()
+        if config['cuda'] and not torch.cuda.is_available():
+            self.logger.warning('Warning: There\'s no CUDA support on this machine, '
+                                'training is performed on CPU.')
+        else:
+            self.gpu = torch.device('cuda:' + str(config['gpu']))
+            self.model = self.model.to(self.gpu)
+
+        self.train_logger = train_logger
+        self.optimizer = getattr(optim, config['optimizer_type'])(model.parameters(),
+                                                                  **config['optimizer'])
+
+        # lr scheduler
+        self.lr_scheduler = getattr( optim.lr_scheduler, config['lr_scheduler_type'], None)
+        if self.lr_scheduler:
+            self.lr_scheduler = self.lr_scheduler(self.optimizer, **config['lr_scheduler'])
+            self.lr_scheduler_freq = config['lr_scheduler_freq']
+
+        self.start_epoch = 1
+
+        self.checkpoint_dir = os.path.join(config['trainer']['save_dir'], self.name)
+        ensure_dir(self.checkpoint_dir)
+        json.dump(config, open(os.path.join(self.checkpoint_dir, 'config.json'), 'w'),
+                  indent=4, sort_keys=False)
+
+        atexit.register(self.cleanup)
+        if resume:
+            self._resume_checkpoint(resume)        
+
+    def cleanup(self):
+        self.writer.close()
+
+    def train(self):
+
+        for epoch in range(self.start_epoch, self.epochs + 1):
+            result = self._train_epoch(epoch)
+            log = {'epoch': epoch, 'loss': result['loss']}
+            if epoch % self.save_freq == 0:
+                self._save_checkpoint(epoch, log)
+
+
+    def _train_epoch(self, epoch):
+        raise NotImplementedError
+
+    def _save_checkpoint(self, epoch, log):
+
+        arch = type(self.model).__name__
+        state = {
+            'arch': arch,
+            'epoch': epoch,
+            'logger': self.train_logger,
+            'state_dict': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'config': self.config
+        }
+        filename = os.path.join(self.checkpoint_dir, 'checkpoint-epoch{:03d}-loss-{:.4f}.pth.tar'
+                                .format(epoch, log['loss']))
+        torch.save(state, filename)
+        self.logger.info("Saving checkpoint: {} ...".format(filename))
+
+    def _resume_checkpoint(self, resume_path):
+        self.logger.info("Loading checkpoint: {} ...".format(resume_path))
+        checkpoint = torch.load(resume_path)
+        self.start_epoch = checkpoint['epoch'] + 1
+        self.model.load_state_dict(checkpoint['state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        if self.with_cuda:
+            for state in self.optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.cuda(self.gpu)
+        self.train_logger = checkpoint['logger']
+        #self.config = checkpoint['config']
+        self.logger.info("Checkpoint '{}' (epoch {}) loaded".format(resume_path, self.start_epoch))
+
+
+
+class E2DEPTHTrainer(BaseTrainer):
 
     def __init__(self, model, loss, loss_params, metrics, resume, config,
                  data_loader, valid_data_loader=None, train_logger=None):
-        super(Trainer, self).__init__(model, loss, loss_params, metrics, resume, config, train_logger)
+        super().__init__(model, loss, loss_params, metrics, resume, config, train_logger)
         self.config = config
         self.batch_size = data_loader.batch_size
         self.data_loader = data_loader
         self.valid_data_loader = valid_data_loader
         self.valid = True if self.valid_data_loader is not None else False
         self.log_step = int(np.sqrt(self.batch_size))
-        self.num_previews = config['trainer']['num_previews']
-        self.num_val_previews = config['trainer']['num_val_previews']
 
         try:
             self.weight_contrast_loss = config['weight_contrast_loss']
@@ -33,13 +115,6 @@ class Trainer(BaseTrainer):
             print('Will not use contrast loss')
             self.weight_contrast_loss = 0
 
-        # To visualize the progress of the network on the training and validation data,
-        # we select a random sample in the training and validation set, which we will plot at each epoch
-        self.preview_indices = np.random.choice(range(len(data_loader.dataset)), self.num_previews, replace=False)
-        if valid_data_loader:
-            self.val_preview_indices = np.random.choice(range(len(valid_data_loader.dataset)),
-                                                        self.num_val_previews,
-                                                        replace=False)
 
     def _eval_metrics(self, output, target):
         acc_metrics = np.zeros(len(self.metrics))
@@ -50,93 +125,68 @@ class Trainer(BaseTrainer):
             acc_metrics[i] += metric(output, target)
         return acc_metrics
 
-    def _to_input_and_target(self, item):
-        network_input = item['events'].to(self.gpu)
-        target = item['frame'].to(self.gpu)
-        return network_input, target
+    def calculate_loss(self, predicted_target, target):
+        if self.loss_params is not None:
+            reconstruction_loss = self.loss(predicted_target, target, **self.loss_params)
+        else:
+            reconstruction_loss = self.loss(predicted_target, target)
+        contrast_loss = self.weight_contrast_loss * torch.pow(predicted_target.std() - target.std(), 2)
+        return reconstruction_loss + contrast_loss
 
-    @staticmethod
-    def make_preview(network_input, target, target_pred):
-        # the visualization consists of three images: [events, predicted image, ground truth image]
-        # network_input: [C x H x W]
-        # target: [1 x H x W]
-        # target_pred: [1 x H x W]
-        # for make_grid, we need to pass [N x 1 x H x W] where N is the number of images in the grid
-        event_preview = torch.sum(network_input, dim=0).unsqueeze(0)
-        return utils.make_grid(torch.cat([event_preview, target, target_pred], dim=0).unsqueeze(dim=1),
-                               normalize=True, scale_each=True,
-                               nrow=3)
+
+    def forward_pass_sequence(self, sequence):
+
+        L = len(sequence)
+        assert (L > 0)
+
+        prev_states_lstm = {}
+        for k in range(0, self.every_x_rgb_frame):
+            prev_states_lstm['events{}'.format(k)] = None
+            prev_states_lstm['depth{}'.format(k)] = None
+
+        loss = 0
+        for l in range(L):
+            item = sequence[l]
+            predicted_target, new_states_lstm = self.model(item, prev_states_lstm)
+            prev_states_lstm = new_states_lstm
+
+            target = item['depth_' + l].to(self.gpu)
+
+            loss += self.calculate_loss(target, predicted_target)
+#            total_metrics += self._eval_metrics(predicted_target, target)
+
+        return loss
+
 
     def _train_epoch(self, epoch):
-        """
-        Training logic for an epoch
-
-        :param epoch: Current training epoch.
-        :return: A log that contains all information you want to save.
-
-        Note:
-            If you have additional information to record, for example:
-                > additional_log = {"x": x, "y": y}
-            merge it with log before return. i.e.
-                > log = {**log, **additional_log}
-                > return log
-
-            The metrics in log must have the key 'metrics'.
-        """
         self.model.train()
 
         total_loss = 0
         total_metrics = np.zeros(len(self.metrics))
-        for batch_idx, data in enumerate(self.data_loader):
-            network_input, target = self._to_input_and_target(data)
+        for batch_idx, sequence in enumerate(self.data_loader):
+
             self.optimizer.zero_grad()
-            target_pred, _ = self.model(network_input)
-
-            if self.loss_params is not None:
-                reconstruction_loss = self.loss(target_pred, target, **self.loss_params)
-            else:
-                reconstruction_loss = self.loss(target_pred, target)
-
-            # contrast loss: tries to push the image to have reasonable contrast
-
-            # with torch.no_grad():
-            #     print('gt. std: {:.3f}'.format(target.std()))
-            #     print('rec. std: {:.3f}'.format(target_pred.std()))
-
-            contrast_loss = self.weight_contrast_loss * torch.pow(target_pred.std() - target.std(), 2)
-            loss = reconstruction_loss + contrast_loss
-
+            loss = self.forward_pass_sequence(sequence)
             loss.backward()
-            if batch_idx % 25 == 0:
-                plot_grad_flow(self.model.named_parameters())
             self.optimizer.step()
 
-            total_loss += loss.item()
-            total_metrics += self._eval_metrics(target_pred, target)
 
-            if self.verbosity >= 2 and batch_idx % self.log_step == 0:
+            total_loss += loss
+            # TODO: need to add metrics as well: total_metrics
+
+            if batch_idx % self.log_step == 0:
                 self.logger.info('Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.3f}, L_r: {:.3f}, L_contrast: {:.3f}'.format(
                     epoch,
                     batch_idx * self.data_loader.batch_size,
                     len(self.data_loader) * self.data_loader.batch_size,
                     100.0 * batch_idx / len(self.data_loader),
-                    loss.item(),
-                    reconstruction_loss.item(),
-                    contrast_loss.item()))
-
-        with torch.no_grad():
-            # create a set of previews and log them
-            previews = []
-            for preview_idx in self.preview_indices:
-                data = self.data_loader.dataset[preview_idx]
-                network_input, target = self._to_input_and_target(data)
-                target_pred, _ = self.model(network_input.unsqueeze(dim=0))
-                previews.append(self.make_preview(network_input, target, target_pred.squeeze(dim=0)))
+                    loss.item()))
+                    # reconstruction_loss.item(),
+                    # contrast_loss.item()))
 
         log = {
             'loss': total_loss / len(self.data_loader),
             'metrics': (total_metrics / len(self.data_loader)).tolist(),
-            'previews': previews
         }
 
         if self.valid:
@@ -146,44 +196,24 @@ class Trainer(BaseTrainer):
         return log
 
     def _valid_epoch(self):
-        """
-        Validate after training an epoch
 
-        :return: A log that contains information about validation
-
-        Note:
-            The validation metrics in log must have the key 'val_metrics'.
-        """
         self.model.eval()
         total_val_loss = 0
         total_val_metrics = np.zeros(len(self.metrics))
+
         with torch.no_grad():
-            for batch_idx, data in enumerate(self.valid_data_loader):
-                network_input, target = self._to_input_and_target(data)
-                target_pred, _ = self.model(network_input)
+            for batch_idx, sequence in enumerate(self.valid_data_loader):
 
-                if self.loss_params is not None:
-                    loss = self.loss(target_pred, target, **self.loss_params)
-                else:
-                    loss = self.loss(target_pred, target)
-
-                contrast_loss = self.weight_contrast_loss * torch.pow(target_pred.std() - target.std(), 2)
-                loss += contrast_loss
-
-                total_val_loss += loss.item()
-                total_val_metrics += self._eval_metrics(target_pred, target)
-
-            # create a set of previews and log then
-            val_previews = []
-            for val_preview_idx in self.val_preview_indices:
-                data = self.valid_data_loader.dataset[val_preview_idx]
-                network_input, target = self._to_input_and_target(data)
-                target_pred, _ = self.model(network_input.unsqueeze(dim=0))
-                val_preview = self.make_preview(network_input, target, target_pred.squeeze(dim=0))
-                val_previews.append(val_preview)
+                total_val_loss += self.forward_pass_sequence(sequence)
+            # TODO: need to add metrics
 
         return {
             'val_loss': total_val_loss / len(self.valid_data_loader),
             'val_metrics': (total_val_metrics / len(self.valid_data_loader)).tolist(),
-            'val_previews': val_previews
         }
+
+
+if __name__ == '__main__':
+
+    pass
+
