@@ -3,9 +3,10 @@ import torch
 import torch.optim as optim
 import logging, math, atexit, os, json
 from ..utils.util import ensure_dir
+from ..utils.event_tensor_utils import EventPreprocessor
+from torch.nn import ReflectionPad2d
 
 class BaseTrainer:
-
 
     def __init__(self, model, loss, loss_params, metrics, resume, config, train_logger=None):
         self.config = config
@@ -28,14 +29,14 @@ class BaseTrainer:
             self.model = self.model.to(self.gpu)
 
         self.train_logger = train_logger
-        self.optimizer = getattr(optim, config['optimizer_type'])(model.parameters(),
-                                                                  **config['optimizer'])
+        self.optimizer = getattr(optim, config["trainer"]['optimizer_type'])(model.parameters(),
+                                                                  **config["trainer"]['optimizer'])
 
         # lr scheduler
-        self.lr_scheduler = getattr( optim.lr_scheduler, config['lr_scheduler_type'], None)
+        self.lr_scheduler = getattr( optim.lr_scheduler, config["trainer"]['lr_scheduler_type'], None)
         if self.lr_scheduler:
-            self.lr_scheduler = self.lr_scheduler(self.optimizer, **config['lr_scheduler'])
-            self.lr_scheduler_freq = config['lr_scheduler_freq']
+            self.lr_scheduler = self.lr_scheduler(self.optimizer, **config["trainer"]['lr_scheduler'])
+            self.lr_scheduler_freq = config["trainer"]['lr_scheduler_freq']
 
         self.start_epoch = 1
 
@@ -49,7 +50,7 @@ class BaseTrainer:
             self._resume_checkpoint(resume)        
 
     def cleanup(self):
-        self.writer.close()
+        pass
 
     def train(self):
 
@@ -58,7 +59,6 @@ class BaseTrainer:
             log = {'epoch': epoch, 'loss': result['loss']}
             if epoch % self.save_freq == 0:
                 self._save_checkpoint(epoch, log)
-
 
     def _train_epoch(self, epoch):
         raise NotImplementedError
@@ -108,13 +108,22 @@ class E2DEPTHTrainer(BaseTrainer):
         self.valid = True if self.valid_data_loader is not None else False
         self.log_step = int(np.sqrt(self.batch_size))
 
+
+        class options:
+            hot_pixels_file= None
+            flip = False
+            no_normalize = False
+        self.event_preprocessor = EventPreprocessor(options)
+        self.pad = ReflectionPad2d((3, 3, 2, 2)) # left, right, top, bottom: works according to this configuation
+
+
+
         try:
             self.weight_contrast_loss = config['weight_contrast_loss']
             print('Will use contrast loss with weight={:.2f}'.format(self.weight_contrast_loss))
         except KeyError:
             print('Will not use contrast loss')
             self.weight_contrast_loss = 0
-
 
     def _eval_metrics(self, output, target):
         acc_metrics = np.zeros(len(self.metrics))
@@ -133,34 +142,30 @@ class E2DEPTHTrainer(BaseTrainer):
         contrast_loss = self.weight_contrast_loss * torch.pow(predicted_target.std() - target.std(), 2)
         return reconstruction_loss + contrast_loss
 
-
     def forward_pass_sequence(self, sequence):
 
         L = len(sequence)
         assert (L > 0)
 
-        prev_states_lstm = {}
-        for k in range(0, self.every_x_rgb_frame):
-            prev_states_lstm['events{}'.format(k)] = None
-            prev_states_lstm['depth{}'.format(k)] = None
-
         loss = 0
+        prev_states_lstm = None
         for l in range(L):
             item = sequence[l]
-            predicted_target, new_states_lstm = self.model(item, prev_states_lstm)
+            events = item['events0'].to(self.gpu)
+
+            event_frame = self.pad(self.event_preprocessor(events))
+
+            predicted_target, new_states_lstm = self.model(event_frame, prev_states_lstm)
             prev_states_lstm = new_states_lstm
 
-            target = item['depth_' + l].to(self.gpu)
-
+            target = item['depth_events0'].to(self.gpu)
             loss += self.calculate_loss(target, predicted_target)
 #            total_metrics += self._eval_metrics(predicted_target, target)
 
         return loss
 
-
     def _train_epoch(self, epoch):
         self.model.train()
-
         total_loss = 0
         total_metrics = np.zeros(len(self.metrics))
         for batch_idx, sequence in enumerate(self.data_loader):
@@ -203,7 +208,6 @@ class E2DEPTHTrainer(BaseTrainer):
 
         with torch.no_grad():
             for batch_idx, sequence in enumerate(self.valid_data_loader):
-
                 total_val_loss += self.forward_pass_sequence(sequence)
             # TODO: need to add metrics
 
