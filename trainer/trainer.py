@@ -5,6 +5,26 @@ import logging, math, atexit, os, json
 from ..utils.util import ensure_dir
 from ..utils.event_tensor_utils import EventPreprocessor
 from torch.nn import ReflectionPad2d
+from kornia.filters.sobel import spatial_gradient, sobel
+
+def caliberate_with_dmax(out,dmax=80,alpha=-3.7):
+        #print(out.shape)
+        out=out[0,0,2:262,3:349]
+        out=torch.mul(out,-1)
+        out=torch.add(out,1)
+        out=torch.mul(out,alpha)
+        out=torch.exp(out)
+        out=torch.mul(out,dmax)
+        out=out.double()
+        out=torch.where(out>dmax-0.1,float(1000),out)
+        #print(out.shape)
+        return out
+
+def scale_invariant_loss(y_input, y_target, weight = 1.0, n_lambda = 1.0):
+        
+        log_diff = y_input - y_target
+        is_nan = torch.isnan(log_diff)
+        return weight * ((log_diff[~is_nan]**2).mean()-(n_lambda*(log_diff[~is_nan].mean())**2))
 
 class MultiScaleGradient(torch.nn.Module):
     def __init__(self, start_scale = 1, num_scales = 4):
@@ -190,34 +210,22 @@ class E2DEPTHTrainer(BaseTrainer):
             acc_metrics[i] += metric(output, target)
         return acc_metrics
 
-    def caliberate_with_dmax(out,dmax=80,alpha=-3.7):
-        out=out[0,0,2:262,3:349]
-        out=torch.mul(out,-1)
-        out=torch.add(out,1)
-        out=torch.mul(out,alpha)
-        out=torch.exp(out)
-        out=torch.mul(out,dmax)
-        out=out.double()
-        out=torch.where(out>dmax-0.1,float(1000),out)
-        return out
     
-    def scale_invariant_loss(y_input, y_target, weight = 1.0, n_lambda = 1.0):
-        log_diff = y_input - y_target
-        is_nan = torch.isnan(log_diff)
-        return weight * ((log_diff[~is_nan]**2).mean()-(n_lambda*(log_diff[~is_nan].mean())**2))
-
     
-
+    
     def calculate_loss(self, predicted_target, target,lamb=0.5):
 
-        calib_pred=(predicted_target)
+        calib_pred = caliberate_with_dmax(predicted_target)
+        target=target[0,0,:,:]
+
+        scale_inv_loss = scale_invariant_loss(calib_pred,target)
 
         multi_sc_loss=multi_scale_grad_loss(calib_pred,target)
 
-        scale_inv_loss = scale_invariant_loss(calib_pred,target)
-        
-        return scale_inv_loss+(lamb * multi_sc_loss)
+        total = scale_inv_loss+(lamb * multi_sc_loss)
 
+        print(total)
+        return total
         # if self.loss_params is not None:
         #     reconstruction_loss = self.loss(predicted_target, target, **self.loss_params)
         # else:
@@ -242,7 +250,8 @@ class E2DEPTHTrainer(BaseTrainer):
             prev_states_lstm = new_states_lstm
 
             target = item['depth_events0'].to(self.gpu)
-            loss += self.calculate_loss(target, predicted_target)
+            #print("\n***\n target dim: ",target.size(),"\n predicted dim: ",predicted_target.size(),"\n***")
+            loss += self.calculate_loss(predicted_target, target)
 #            total_metrics += self._eval_metrics(predicted_target, target)
 
         return loss
