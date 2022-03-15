@@ -201,9 +201,9 @@ class E2DEPTHTrainer(BaseTrainer):
             print('Will not use contrast loss')
             self.weight_contrast_loss = 0
 
-    def _eval_metrics(self, output, target):
+    def _eval_metrics(self, pred, target):
         acc_metrics = np.zeros(len(self.metrics))
-        output = output.cpu().data.numpy()
+        pred = pred.cpu().data.numpy()
         target = target.cpu().data.numpy()
         # output = np.argmax(output, axis=1)
         for i, metric in enumerate(self.metrics):
@@ -213,25 +213,17 @@ class E2DEPTHTrainer(BaseTrainer):
     
     
     
-    def calculate_loss(self, predicted_target, target,lamb=0.5):
+    def calculate_loss(self, predicted_target, target, lamb=0.5):
 
         calib_pred = caliberate_with_dmax(predicted_target)
         target=target[0,0,:,:]
 
         scale_inv_loss = scale_invariant_loss(calib_pred,target)
-
         multi_sc_loss=multi_scale_grad_loss(calib_pred,target)
-
         total = scale_inv_loss+(lamb * multi_sc_loss)
 
-        print(total)
         return total
-        # if self.loss_params is not None:
-        #     reconstruction_loss = self.loss(predicted_target, target, **self.loss_params)
-        # else:
-        #     reconstruction_loss = self.loss(predicted_target, target)
-        # contrast_loss = self.weight_contrast_loss * torch.pow(predicted_target.std() - target.std(), 2)
-        # return reconstruction_loss + contrast_loss
+
 
     def forward_pass_sequence(self, sequence):
 
@@ -252,7 +244,7 @@ class E2DEPTHTrainer(BaseTrainer):
             target = item['depth_events0'].to(self.gpu)
             #print("\n***\n target dim: ",target.size(),"\n predicted dim: ",predicted_target.size(),"\n***")
             loss += self.calculate_loss(predicted_target, target)
-#            total_metrics += self._eval_metrics(predicted_target, target)
+            total_metrics += self._eval_metrics(predicted_target, target)
 
         return loss
 
@@ -272,12 +264,13 @@ class E2DEPTHTrainer(BaseTrainer):
             # TODO: need to add metrics as well: total_metrics
 
             if batch_idx % self.log_step == 0:
-                self.logger.info('Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.3f}, L_r: {:.3f}, L_contrast: {:.3f}'.format(
-                    epoch,
-                    batch_idx * self.data_loader.batch_size,
-                    len(self.data_loader) * self.data_loader.batch_size,
-                    100.0 * batch_idx / len(self.data_loader),
-                    loss.item()))
+                pass
+                # self.logger.info('Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.3f}, L_r: {:.3f}, L_contrast: {:.3f}'.format(
+                #     epoch,
+                #     batch_idx * self.data_loader.batch_size,
+                #     len(self.data_loader) * self.data_loader.batch_size,
+                #     100.0 * batch_idx / len(self.data_loader),
+                #     loss.item()))
                     # reconstruction_loss.item(),
                     # contrast_loss.item()))
 
