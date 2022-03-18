@@ -157,6 +157,7 @@ class BaseTrainer:
 
     def _resume_checkpoint(self, resume_path):
         self.logger.info("Loading checkpoint: {} ...".format(resume_path))
+        print("Loading checkpoint: {} ...".format(resume_path))
         checkpoint = torch.load(resume_path)
         self.start_epoch = checkpoint['epoch'] + 1
         self.model.load_state_dict(checkpoint['state_dict'])
@@ -272,12 +273,13 @@ class E2DEPTHTrainer(BaseTrainer):
             # TODO: need to add metrics as well: total_metrics
 
             if batch_idx % self.log_step == 0:
-                self.logger.info('Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.3f}, L_r: {:.3f}, L_contrast: {:.3f}'.format(
-                    epoch,
-                    batch_idx * self.data_loader.batch_size,
-                    len(self.data_loader) * self.data_loader.batch_size,
-                    100.0 * batch_idx / len(self.data_loader),
-                    loss.item()))
+                pass
+                # self.logger.info('Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.3f}, L_r: {:.3f}, L_contrast: {:.3f}'.format(
+                #     epoch,
+                #     batch_idx * self.data_loader.batch_size,
+                #     len(self.data_loader) * self.data_loader.batch_size,
+                #     100.0 * batch_idx / len(self.data_loader),
+                #     loss.item()))
                     # reconstruction_loss.item(),
                     # contrast_loss.item()))
 

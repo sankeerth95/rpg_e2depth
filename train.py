@@ -25,8 +25,12 @@ def main(config):
     dataloader = DataLoader(dataset)
     # validation_dataset = SequenceSynchronizedFramesEventsDataset(base_folder='./data/test/', event_folder='events/data/', depth_folder = 'depth/data/', dataset_type='voxeltrain')
     # dataloader_valid = DataLoader(validation_dataset)
+    try:
+        ret=config["trainer"] ["resume"]
+    except:
+        ret=False
 
-    train_obj = trainer.E2DEPTHTrainer(model, loss, loss_params, metrics, resume=False, config=config, data_loader=dataloader)
+    train_obj = trainer.E2DEPTHTrainer(model, loss, loss_params, metrics, ret, config=config, data_loader=dataloader)
     train_obj.train()
 
 
