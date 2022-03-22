@@ -1,8 +1,10 @@
+from re import S
 import numpy as np
 import torch
 import torch.optim as optim
 import logging, math, atexit, os, json
 from ..utils.util import ensure_dir
+from ..utils.shift_utils import StoreIntermediateTensore, SweepDelta
 from ..utils.event_tensor_utils import EventPreprocessor
 from torch.nn import ReflectionPad2d
 from kornia.filters.sobel import spatial_gradient, sobel
@@ -184,7 +186,11 @@ class E2DEPTHTrainer(BaseTrainer):
         self.valid_data_loader = valid_data_loader
         self.valid = True if self.valid_data_loader is not None else False
         self.log_step = int(np.sqrt(self.batch_size))
-
+        self.su = StoreIntermediateTensore([
+            self.model.unetrecurrent.encoders[0].fence,
+            self.model.unetrecurrent.encoders[2].fence
+        ])
+        self.states_in_validation = None
 
         class options:
             hot_pixels_file= None
@@ -225,7 +231,7 @@ class E2DEPTHTrainer(BaseTrainer):
 
         total = scale_inv_loss+(lamb * multi_sc_loss)
 
-        print(total)
+        #print(total)
         return total
         # if self.loss_params is not None:
         #     reconstruction_loss = self.loss(predicted_target, target, **self.loss_params)
@@ -256,6 +262,19 @@ class E2DEPTHTrainer(BaseTrainer):
 #            total_metrics += self._eval_metrics(predicted_target, target)
 
         return loss
+
+    def forward_for_valid(self,sequence,states=None):
+        # input_struct in experiments.py is analogous to sequence
+        if states==None:
+            states=self.states_in_validation
+        events=self.pad(self.event_preprocessor(sequence))
+        events=events.cuda()
+       
+
+        prediction,states=self.model(events,states)
+        print("seq size :", len(sequence))
+        return prediction,states
+
 
     def _train_epoch(self, epoch):
         self.model.train()
@@ -293,21 +312,44 @@ class E2DEPTHTrainer(BaseTrainer):
             log = {**log, **val_log}
 
         return log
+    
+
+    def infer(self,su):
+        sweep_del=SweepDelta()
+        infer_list=[]
+        for module in su.store_tensors:
+            tensors=su.store_tensors[module]
+            diffs,numels=sweep_del.num_operations(tensors)
+            infer_list.append(diffs)
+        
+        return infer_list
+
 
     def _valid_epoch(self):
-
+        
         self.model.eval()
         total_val_loss = 0
         total_val_metrics = np.zeros(len(self.metrics))
-
+        
         with torch.no_grad():
-            for batch_idx, sequence in enumerate(self.valid_data_loader):
-                total_val_loss += self.forward_pass_sequence(sequence)
+            for sequence in self.valid_data_loader:
+                self.su.register_hooks()
+                prediction,states= self.forward_for_valid(sequence)
+                self.su.deregister_hooks()
+                self.states_in_validation=states
+                print("for loss",sequence.size())
+                #loss=self.calculate_loss(prediction,)
+                
+               
+
+
+            infered_list = self.infer(self.su) 
+            
             # TODO: need to add metrics
 
         return {
-            'val_loss': total_val_loss / len(self.valid_data_loader),
-            'val_metrics': (total_val_metrics / len(self.valid_data_loader)).tolist(),
+            'val_loss':0, #total_val_loss / len(self.valid_data_loader),
+            'val_metrics': 0,#(total_val_metrics / len(self.valid_data_loader)).tolist(),
         }
 
 

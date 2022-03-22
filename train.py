@@ -1,4 +1,5 @@
 import json, os ,argparse, logging
+from data_fetchers.EventDataUtilities.event_dataset import ContinuousEventsDataset
 import torch
 import torch.nn as nn
 from data_fetchers.EventDataUtilities.dataset import SequenceSynchronizedFramesEventsDataset
@@ -23,14 +24,16 @@ def main(config):
     #e2depth train dataloader
     dataset = SequenceSynchronizedFramesEventsDataset(base_folder=config["trainer"]["base_dir"], event_folder=config["trainer"]["event_dir"], depth_folder = config["trainer"]["depth_dir"], dataset_type='voxeltrain')
     dataloader = DataLoader(dataset)
-    # validation_dataset = SequenceSynchronizedFramesEventsDataset(base_folder='./data/test/', event_folder='events/data/', depth_folder = 'depth/data/', dataset_type='voxeltrain')
-    # dataloader_valid = DataLoader(validation_dataset)
+    validation_dataset = ContinuousEventsDataset(base_folder=config["validater"]["base_dir"], event_folder=config["validater"]["event_dir"],
+    \
+            width=346, height=260, window_size = config["validater"]['window_size'], time_shift = config["validater"]['time_shift'])
+    dataloader_valid = DataLoader(validation_dataset)
     try:
         ret=config["trainer"] ["resume"]
     except:
         ret=False
 
-    train_obj = trainer.E2DEPTHTrainer(model, loss, loss_params, metrics, ret, config=config, data_loader=dataloader)
+    train_obj = trainer.E2DEPTHTrainer(model, loss, loss_params, metrics, ret, config=config, data_loader=dataloader,valid_data_loader=dataloader_valid)
     train_obj.train()
 
 
