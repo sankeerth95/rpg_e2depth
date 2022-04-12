@@ -1,8 +1,7 @@
 import json, os ,argparse, logging
-from data_fetchers.EventDataUtilities.event_dataset import ContinuousEventsDataset
 import torch
 import torch.nn as nn
-from data_fetchers.EventDataUtilities.dataset import SequenceSynchronizedFramesEventsDataset
+from data_fetchers.dataset import SequenceSynchronizedFramesEventsDataset
 from .model.model import E2VIDRecurrent
 from .trainer import trainer
 
