@@ -1,8 +1,10 @@
+from re import S
 import numpy as np
 import torch
 import torch.optim as optim
 import logging, math, atexit, os, json
 from ..utils.util import ensure_dir
+from ..utils.shift_utils import StoreIntermediateTensore, SweepDelta
 from ..utils.event_tensor_utils import EventPreprocessor
 from torch.nn import ReflectionPad2d
 from kornia.filters.sobel import spatial_gradient, sobel
@@ -157,6 +159,7 @@ class BaseTrainer:
 
     def _resume_checkpoint(self, resume_path):
         self.logger.info("Loading checkpoint: {} ...".format(resume_path))
+        print("Loading checkpoint: {} ...".format(resume_path))
         checkpoint = torch.load(resume_path)
         self.start_epoch = checkpoint['epoch'] + 1
         self.model.load_state_dict(checkpoint['state_dict'])
@@ -183,7 +186,11 @@ class E2DEPTHTrainer(BaseTrainer):
         self.valid_data_loader = valid_data_loader
         self.valid = True if self.valid_data_loader is not None else False
         self.log_step = int(np.sqrt(self.batch_size))
-
+        self.su = StoreIntermediateTensore([
+            self.model.unetrecurrent.encoders[0].fence,
+            self.model.unetrecurrent.encoders[2].fence
+        ])
+        self.states_in_validation = None
 
         class options:
             hot_pixels_file= None
@@ -191,8 +198,6 @@ class E2DEPTHTrainer(BaseTrainer):
             no_normalize = False
         self.event_preprocessor = EventPreprocessor(options)
         self.pad = ReflectionPad2d((3, 3, 2, 2)) # left, right, top, bottom: works according to this configuation
-
-
 
         try:
             self.weight_contrast_loss = config['weight_contrast_loss']
@@ -211,9 +216,7 @@ class E2DEPTHTrainer(BaseTrainer):
         return acc_metrics
 
     
-    
-    
-    def calculate_loss(self, predicted_target, target, lamb=0.5):
+    def calculate_loss(self, predicted_target, target,lamb=0.5):
 
         calib_pred = caliberate_with_dmax(predicted_target)
         target=target[0,0,:,:]
@@ -222,6 +225,7 @@ class E2DEPTHTrainer(BaseTrainer):
         multi_sc_loss=multi_scale_grad_loss(calib_pred,target)
         total = scale_inv_loss+(lamb * multi_sc_loss)
 
+        #print(total)
         return total
 
 
@@ -248,6 +252,19 @@ class E2DEPTHTrainer(BaseTrainer):
 
         return loss
 
+    def forward_for_valid(self,sequence,states=None):
+        # input_struct in experiments.py is analogous to sequence
+        if states==None:
+            states=self.states_in_validation
+        events=self.pad(self.event_preprocessor(sequence))
+        events=events.cuda()
+       
+
+        prediction,states=self.model(events,states)
+        print("seq size :", len(sequence))
+        return prediction,states
+
+
     def _train_epoch(self, epoch):
         self.model.train()
         total_loss = 0
@@ -259,18 +276,14 @@ class E2DEPTHTrainer(BaseTrainer):
             loss.backward()
             self.optimizer.step()
 
-
             total_loss += loss
             # TODO: need to add metrics as well: total_metrics
 
             if batch_idx % self.log_step == 0:
-                pass
-                # self.logger.info('Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.3f}, L_r: {:.3f}, L_contrast: {:.3f}'.format(
-                #     epoch,
-                #     batch_idx * self.data_loader.batch_size,
-                #     len(self.data_loader) * self.data_loader.batch_size,
-                #     100.0 * batch_idx / len(self.data_loader),
-                #     loss.item()))
+                self.logger.info(f'Train Epoch: {epoch} \
+                    [{batch_idx * self.data_loader.batch_size}\
+                        /{len(self.data_loader) * self.data_loader.batch_size} \
+                    ({100.0 * batch_idx / len(self.data_loader):.2f}%)] Loss: , L_r: , L_contrast: ')
                     # reconstruction_loss.item(),
                     # contrast_loss.item()))
 
@@ -284,21 +297,44 @@ class E2DEPTHTrainer(BaseTrainer):
             log = {**log, **val_log}
 
         return log
+    
+
+    def infer(self,su):
+        sweep_del=SweepDelta()
+        infer_list=[]
+        for module in su.store_tensors:
+            tensors=su.store_tensors[module]
+            diffs,numels=sweep_del.num_operations(tensors)
+            infer_list.append(diffs)
+        
+        return infer_list
+
 
     def _valid_epoch(self):
-
+        
         self.model.eval()
         total_val_loss = 0
         total_val_metrics = np.zeros(len(self.metrics))
-
+        
         with torch.no_grad():
-            for batch_idx, sequence in enumerate(self.valid_data_loader):
-                total_val_loss += self.forward_pass_sequence(sequence)
+            for sequence in self.valid_data_loader:
+                self.su.register_hooks()
+                prediction,states= self.forward_for_valid(sequence)
+                self.su.deregister_hooks()
+                self.states_in_validation=states
+                print("for loss",sequence.size())
+                #loss=self.calculate_loss(prediction,)
+                
+               
+
+
+            infered_list = self.infer(self.su) 
+            
             # TODO: need to add metrics
 
         return {
-            'val_loss': total_val_loss / len(self.valid_data_loader),
-            'val_metrics': (total_val_metrics / len(self.valid_data_loader)).tolist(),
+            'val_loss':0, #total_val_loss / len(self.valid_data_loader),
+            'val_metrics': 0,#(total_val_metrics / len(self.valid_data_loader)).tolist(),
         }
 
 
