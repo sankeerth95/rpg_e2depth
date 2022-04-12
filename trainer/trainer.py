@@ -192,8 +192,6 @@ class E2DEPTHTrainer(BaseTrainer):
         self.event_preprocessor = EventPreprocessor(options)
         self.pad = ReflectionPad2d((3, 3, 2, 2)) # left, right, top, bottom: works according to this configuation
 
-
-
         try:
             self.weight_contrast_loss = config['weight_contrast_loss']
             print('Will use contrast loss with weight={:.2f}'.format(self.weight_contrast_loss))
@@ -210,8 +208,6 @@ class E2DEPTHTrainer(BaseTrainer):
             acc_metrics[i] += metric(output, target)
         return acc_metrics
 
-    
-    
     
     def calculate_loss(self, predicted_target, target,lamb=0.5):
 
@@ -267,17 +263,14 @@ class E2DEPTHTrainer(BaseTrainer):
             loss.backward()
             self.optimizer.step()
 
-
             total_loss += loss
             # TODO: need to add metrics as well: total_metrics
 
             if batch_idx % self.log_step == 0:
-                self.logger.info('Train Epoch: {} [{}/{} ({:.0f}%)] Loss: {:.3f}, L_r: {:.3f}, L_contrast: {:.3f}'.format(
-                    epoch,
-                    batch_idx * self.data_loader.batch_size,
-                    len(self.data_loader) * self.data_loader.batch_size,
-                    100.0 * batch_idx / len(self.data_loader),
-                    loss.item()))
+                self.logger.info(f'Train Epoch: {epoch} \
+                    [{batch_idx * self.data_loader.batch_size}\
+                        /{len(self.data_loader) * self.data_loader.batch_size} \
+                    ({100.0 * batch_idx / len(self.data_loader):.2f}%)] Loss: , L_r: , L_contrast: ')
                     # reconstruction_loss.item(),
                     # contrast_loss.item()))
 

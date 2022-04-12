@@ -87,8 +87,7 @@ class E2VIDRecurrent(BaseE2VID):
                                            base_num_channels=self.base_num_channels,
                                            num_residual_blocks=self.num_residual_blocks,
                                            norm=self.norm,
-                                           use_upsample_conv=self.use_upsample_conv,
-                                           k=config['k'])
+                                           use_upsample_conv=self.use_upsample_conv)
 
     def forward(self, event_tensor, prev_states):
         """

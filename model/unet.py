@@ -123,7 +123,7 @@ class UNetRecurrent(BaseUNet):
 
     def __init__(self, num_input_channels, num_output_channels=1, skip_type='sum',
                  recurrent_block_type='convlstm', activation='sigmoid', num_encoders=4, base_num_channels=32,
-                 num_residual_blocks=2, norm=None, use_upsample_conv=True, k=0.001):
+                 num_residual_blocks=2, norm=None, use_upsample_conv=True):
         super(UNetRecurrent, self).__init__(num_input_channels, num_output_channels, skip_type, activation,
                                             num_encoders, base_num_channels, num_residual_blocks, norm,
                                             use_upsample_conv)
@@ -136,7 +136,7 @@ class UNetRecurrent(BaseUNet):
             self.encoders.append(RecurrentConvLayer(input_size, output_size,
                                                     kernel_size=5, stride=2, padding=2,
                                                     recurrent_block_type=recurrent_block_type,
-                                                    norm=self.norm, k=k))
+                                                    norm=self.norm))
 
         self.build_resblocks()
         self.build_decoders()

@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as f
 from torch.nn import init
-from .thresh_fence import Fence
 
 
 class ConvLayer(nn.Module):
@@ -98,7 +97,7 @@ class UpsampleConvLayer(nn.Module):
 
 class RecurrentConvLayer(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0,
-                 recurrent_block_type='convlstm', activation='relu', norm=None, k = 0.001):
+                 recurrent_block_type='convlstm', activation='relu', norm=None):
         super(RecurrentConvLayer, self).__init__()
 
         assert(recurrent_block_type in ['convlstm', 'convgru'])
@@ -109,13 +108,11 @@ class RecurrentConvLayer(nn.Module):
             RecurrentBlock = ConvGRU
         self.conv = ConvLayer(in_channels, out_channels, kernel_size, stride, padding, activation, norm)
         self.recurrent_block = RecurrentBlock(input_size=out_channels, hidden_size=out_channels, kernel_size=3)
-        self.fence = Fence(k=k)
 
     def forward(self, x, prev_state):
         x = self.conv(x)
         state = self.recurrent_block(x, prev_state)
         x = state[0] if self.recurrent_block_type == 'convlstm' else state
-        x = self.fence(x)
         return x, state
 
 
