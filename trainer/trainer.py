@@ -4,7 +4,8 @@ import torch
 import torch.optim as optim
 import logging, math, atexit, os, json
 from ..utils.util import ensure_dir
-from ..utils.shift_utils import StoreIntermediateTensore, SweepDelta
+from utils.shift_utils import StoreIntermediateTensore
+from experiments import SweepDelta
 from ..utils.event_tensor_utils import EventPreprocessor
 from torch.nn import ReflectionPad2d
 from kornia.filters.sobel import spatial_gradient, sobel
@@ -187,8 +188,8 @@ class E2DEPTHTrainer(BaseTrainer):
         self.valid = True if self.valid_data_loader is not None else False
         self.log_step = int(np.sqrt(self.batch_size))
         self.su = StoreIntermediateTensore([
-            self.model.unetrecurrent.encoders[0].fence,
-            self.model.unetrecurrent.encoders[2].fence
+            self.model.unetrecurrent.encoders[0],
+            self.model.unetrecurrent.encoders[2]
         ])
         self.states_in_validation = None
 
@@ -225,7 +226,7 @@ class E2DEPTHTrainer(BaseTrainer):
         multi_sc_loss=multi_scale_grad_loss(calib_pred,target)
         total = scale_inv_loss+(lamb * multi_sc_loss)
 
-        #print(total)
+        print(total)
         return total
 
 
@@ -248,7 +249,7 @@ class E2DEPTHTrainer(BaseTrainer):
             target = item['depth_events0'].to(self.gpu)
             #print("\n***\n target dim: ",target.size(),"\n predicted dim: ",predicted_target.size(),"\n***")
             loss += self.calculate_loss(predicted_target, target)
-            total_metrics += self._eval_metrics(predicted_target, target)
+            # total_metrics += self._eval_metrics(predicted_target, target)
 
         return loss
 
@@ -325,8 +326,6 @@ class E2DEPTHTrainer(BaseTrainer):
                 print("for loss",sequence.size())
                 #loss=self.calculate_loss(prediction,)
                 
-               
-
 
             infered_list = self.infer(self.su) 
             
