@@ -4,7 +4,7 @@ import torch
 import torch.optim as optim
 import logging, math, atexit, os, json
 from ..utils.util import ensure_dir
-from utils.shift_utils import StoreIntermediateTensore
+from utils.shift_utils import StoreIntermediateTensors
 from experiments import SweepDelta
 from ..utils.event_tensor_utils import EventPreprocessor
 from torch.nn import ReflectionPad2d
@@ -24,7 +24,6 @@ def caliberate_with_dmax(out,dmax=80,alpha=-3.7):
         return out
 
 def scale_invariant_loss(y_input, y_target, weight = 1.0, n_lambda = 1.0):
-        
         log_diff = y_input - y_target
         is_nan = torch.isnan(log_diff)
         return weight * ((log_diff[~is_nan]**2).mean()-(n_lambda*(log_diff[~is_nan].mean())**2))
@@ -85,6 +84,15 @@ multi_scale_grad_loss_fn = MultiScaleGradient()
 def multi_scale_grad_loss(prediction, target, preview = False):
     return multi_scale_grad_loss_fn.forward(prediction, target, preview)
 
+
+def perturbation_shift_loss(t_1: 'list[torch.Tensor]', t_2: 'list[torch.Tensor]'):
+    return torch.mean(
+        torch.abs(
+            torch.stack(t_1) - torch.stack(t_2)
+        )**0.5
+    )
+
+
 class BaseTrainer:
 
     def __init__(self, model, loss, loss_params, metrics, resume, config, train_logger=None):
@@ -99,13 +107,8 @@ class BaseTrainer:
         self.epochs = config['trainer']['epochs']
         self.save_freq = config['trainer']['save_freq']
 
-        self.with_cuda = config['cuda'] and torch.cuda.is_available()
-        if config['cuda'] and not torch.cuda.is_available():
-            self.logger.warning('Warning: There\'s no CUDA support on this machine, '
-                                'training is performed on CPU.')
-        else:
-            self.gpu = torch.device('cuda:' + str(config['gpu']))
-            self.model = self.model.to(self.gpu)
+        self.gpu = torch.device('cuda:' + str(config['gpu']))
+        self.model = self.model.to(self.gpu)
 
         self.train_logger = train_logger
         self.optimizer = getattr(optim, config["trainer"]['optimizer_type'])(model.parameters(),
@@ -132,7 +135,6 @@ class BaseTrainer:
         pass
 
     def train(self):
-
         for epoch in range(self.start_epoch, self.epochs + 1):
             result = self._train_epoch(epoch)
             log = {'epoch': epoch, 'loss': result['loss']}
@@ -175,7 +177,6 @@ class BaseTrainer:
         self.logger.info("Checkpoint '{}' (epoch {}) loaded".format(resume_path, self.start_epoch))
 
 
-
 class E2DEPTHTrainer(BaseTrainer):
 
     def __init__(self, model, loss, loss_params, metrics, resume, config,
@@ -187,10 +188,6 @@ class E2DEPTHTrainer(BaseTrainer):
         self.valid_data_loader = valid_data_loader
         self.valid = True if self.valid_data_loader is not None else False
         self.log_step = int(np.sqrt(self.batch_size))
-        self.su = StoreIntermediateTensore([
-            self.model.unetrecurrent.encoders[0],
-            self.model.unetrecurrent.encoders[2]
-        ])
         self.states_in_validation = None
 
         class options:
@@ -213,22 +210,19 @@ class E2DEPTHTrainer(BaseTrainer):
         target = target.cpu().data.numpy()
         # output = np.argmax(output, axis=1)
         for i, metric in enumerate(self.metrics):
-            acc_metrics[i] += metric(output, target)
+            acc_metrics[i] += metric(pred, target)
         return acc_metrics
 
-    
     def calculate_loss(self, predicted_target, target,lamb=0.5):
 
         calib_pred = caliberate_with_dmax(predicted_target)
         target=target[0,0,:,:]
-
         scale_inv_loss = scale_invariant_loss(calib_pred,target)
         multi_sc_loss=multi_scale_grad_loss(calib_pred,target)
         total = scale_inv_loss+(lamb * multi_sc_loss)
 
         print(total)
         return total
-
 
     def forward_pass_sequence(self, sequence):
 
@@ -259,12 +253,9 @@ class E2DEPTHTrainer(BaseTrainer):
             states=self.states_in_validation
         events=self.pad(self.event_preprocessor(sequence))
         events=events.cuda()
-       
-
         prediction,states=self.model(events,states)
         print("seq size :", len(sequence))
         return prediction,states
-
 
     def _train_epoch(self, epoch):
         self.model.train()
@@ -285,8 +276,6 @@ class E2DEPTHTrainer(BaseTrainer):
                     [{batch_idx * self.data_loader.batch_size}\
                         /{len(self.data_loader) * self.data_loader.batch_size} \
                     ({100.0 * batch_idx / len(self.data_loader):.2f}%)] Loss: , L_r: , L_contrast: ')
-                    # reconstruction_loss.item(),
-                    # contrast_loss.item()))
 
         log = {
             'loss': total_loss / len(self.data_loader),
@@ -298,37 +287,22 @@ class E2DEPTHTrainer(BaseTrainer):
             log = {**log, **val_log}
 
         return log
-    
-
-    def infer(self,su):
-        sweep_del=SweepDelta()
-        infer_list=[]
-        for module in su.store_tensors:
-            tensors=su.store_tensors[module]
-            diffs,numels=sweep_del.num_operations(tensors)
-            infer_list.append(diffs)
-        
-        return infer_list
 
 
     def _valid_epoch(self):
-        
+
         self.model.eval()
         total_val_loss = 0
         total_val_metrics = np.zeros(len(self.metrics))
-        
+
         with torch.no_grad():
             for sequence in self.valid_data_loader:
-                self.su.register_hooks()
                 prediction,states= self.forward_for_valid(sequence)
-                self.su.deregister_hooks()
                 self.states_in_validation=states
                 print("for loss",sequence.size())
                 #loss=self.calculate_loss(prediction,)
-                
 
-            infered_list = self.infer(self.su) 
-            
+
             # TODO: need to add metrics
 
         return {
@@ -337,7 +311,124 @@ class E2DEPTHTrainer(BaseTrainer):
         }
 
 
-if __name__ == '__main__':
+class E2DepthPerturbationTuner(E2DEPTHTrainer):
 
-    pass
+    def __init__(self, model, loss, loss_params, metrics, resume, config,
+                 data_loader, valid_data_loader=None, train_logger=None):
+        super().__init__(model, loss, loss_params, metrics, resume, config,
+                 data_loader, valid_data_loader=valid_data_loader, train_logger=train_logger)
+        self.su1 = StoreIntermediateTensors([
+            self.model.unetrecurrent.encoders[0],
+            self.model.unetrecurrent.encoders[2]
+        ])
+        self.su2 = StoreIntermediateTensors([
+            self.model.unetrecurrent.encoders[0],
+            self.model.unetrecurrent.encoders[2]
+        ])
+
+    def infer(self):
+        sweep_del = SweepDelta()
+        infer_list = []
+        for module in self.su1.store_tensors:
+            tensors = self.su1.store_tensors[module]
+            diffs, numels = sweep_del.num_operations(tensors)
+            infer_list.append(diffs)
+        return infer_list
+
+    def _valid_epoch(self):
+
+        self.model.eval()
+        total_val_loss = 0
+        total_val_metrics = np.zeros(len(self.metrics))
+        
+        with torch.no_grad():
+            for sequence in self.valid_data_loader:
+                self.su1.register_hooks()
+                prediction,states= self.forward_for_valid(sequence)
+                self.su1.deregister_hooks()
+                self.states_in_validation=states
+                print("for loss",sequence.size())
+                #loss=self.calculate_loss(prediction,)
+
+            infered_list = self.infer() 
+            # TODO: need to add metrics
+
+        return {
+            'val_loss':0, #total_val_loss / len(self.valid_data_loader),
+            'val_metrics': 0,#(total_val_metrics / len(self.valid_data_loader)).tolist(),
+        }
+
+
+    def forward_pass_sequence(self, sequence):
+        L = len(sequence)
+        assert (L > 0)
+
+        loss = 0
+        prev_states_lstm = None
+        for l in range(L):
+            item = sequence[l]
+
+            self.su1.register_hooks()
+            events0 = item['events0'].to(self.gpu)
+            event_frame0 = self.pad(self.event_preprocessor(events0))
+            predicted_target, new_states_lstm = self.model(event_frame0, prev_states_lstm)
+            self.su1.deregister_hooks()
+
+
+            self.su2.register_hooks()
+            events1 = item['events1'].to(self.gpu)
+            event_frame1 = self.pad(self.event_preprocessor(events1))
+            predicted_target_, new_states_lstm = self.model(event_frame1, prev_states_lstm)
+            self.su2.deregister_hooks()
+
+            target = item['depth_events0'].to(self.gpu)
+
+            loss += self.calculate_loss(self.su1.store_tensors.values(), self.su2.store_tensors.values())
+            self.su1.clear_tensors()
+            self.su2.clear_tensors()
+            
+            prev_states_lstm = new_states_lstm
+
+        return loss
+
+
+    def calculate_loss(self, t, t_shift):
+        total = perturbation_shift_loss(t, t_shift)
+        self.su.clear_tensors()
+        return total
+
+    
+    def _train_epoch(self, epoch):
+        self.model.train()
+        total_loss = 0
+        total_metrics = np.zeros(len(self.metrics))
+        for batch_idx, sequence in enumerate(self.data_loader):
+
+            print( sequence[0].keys() ) #['events0'] )
+
+            self.optimizer.zero_grad()
+            loss = self.forward_pass_sequence(sequence)
+            loss.backward()
+            self.optimizer.step()
+
+            total_loss += loss
+            # TODO: need to add metrics as well: total_metrics
+
+            if batch_idx % self.log_step == 0:
+                self.logger.info(f'Train Epoch: {epoch} \
+                    [{batch_idx * self.data_loader.batch_size}\
+                        /{len(self.data_loader) * self.data_loader.batch_size} \
+                    ({100.0 * batch_idx / len(self.data_loader):.2f}%)] Loss: , L_r: , L_contrast: ')
+
+        log = {
+            'loss': total_loss / len(self.data_loader),
+            'metrics': (total_metrics / len(self.data_loader)).tolist(),
+        }
+
+        if self.valid:
+            val_log = self._valid_epoch()
+            log = {**log, **val_log}
+
+        return log
+
 
