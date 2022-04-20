@@ -5,7 +5,7 @@ import torch.optim as optim
 import logging, math, atexit, os, json
 from ..utils.util import ensure_dir
 from utils.shift_utils import StoreIntermediateTensors
-from experiments import SweepDelta
+# from experiments import SweepDelta
 from ..utils.event_tensor_utils import EventPreprocessor
 from torch.nn import ReflectionPad2d
 from kornia.filters.sobel import spatial_gradient, sobel
@@ -85,12 +85,16 @@ def multi_scale_grad_loss(prediction, target, preview = False):
     return multi_scale_grad_loss_fn.forward(prediction, target, preview)
 
 
-def perturbation_shift_loss(t_1: 'list[torch.Tensor]', t_2: 'list[torch.Tensor]'):
-    return torch.mean(
-        torch.abs(
-            torch.stack(t_1) - torch.stack(t_2)
-        )**0.5
-    )
+def perturbation_shift_loss(t_1: 'dict', t_2: 'dict', device='cuda'):
+
+    loss = torch.zeros((1)).to(device)
+    for key in t_1.keys():
+        t1 = [ t[0] for t in t_1[key]]
+        t2 = [ t[0] for t in t_2[key]]
+        loss += torch.mean(torch.abs(
+            torch.stack( t1 ) - torch.stack( t2 )
+        )**2 )
+    return loss
 
 
 class BaseTrainer:
@@ -136,6 +140,7 @@ class BaseTrainer:
 
     def train(self):
         for epoch in range(self.start_epoch, self.epochs + 1):
+            print(epoch)
             result = self._train_epoch(epoch)
             log = {'epoch': epoch, 'loss': result['loss']}
             if epoch % self.save_freq == 0:
@@ -156,7 +161,7 @@ class BaseTrainer:
             'config': self.config
         }
         filename = os.path.join(self.checkpoint_dir, 'checkpoint-epoch{:03d}-loss-{:.4f}.pth.tar'
-                                .format(epoch, log['loss']))
+                                .format(epoch, float(log['loss'].detach().cpu().numpy()))  )
         torch.save(state, filename)
         self.logger.info("Saving checkpoint: {} ...".format(filename))
 
@@ -318,12 +323,12 @@ class E2DepthPerturbationTuner(E2DEPTHTrainer):
         super().__init__(model, loss, loss_params, metrics, resume, config,
                  data_loader, valid_data_loader=valid_data_loader, train_logger=train_logger)
         self.su1 = StoreIntermediateTensors([
-            self.model.unetrecurrent.encoders[0],
-            self.model.unetrecurrent.encoders[2]
+            self.model.unetrecurrent.encoders[0].recurrent_block.Gates,
+            self.model.unetrecurrent.encoders[2].recurrent_block.Gates
         ])
         self.su2 = StoreIntermediateTensors([
-            self.model.unetrecurrent.encoders[0],
-            self.model.unetrecurrent.encoders[2]
+            self.model.unetrecurrent.encoders[0].recurrent_block.Gates,
+            self.model.unetrecurrent.encoders[2].recurrent_block.Gates
         ])
 
     def infer(self):
@@ -376,25 +381,24 @@ class E2DepthPerturbationTuner(E2DEPTHTrainer):
 
 
             self.su2.register_hooks()
-            events1 = item['events1'].to(self.gpu)
+            events1 = item['shifted_events0'].to(self.gpu)
             event_frame1 = self.pad(self.event_preprocessor(events1))
             predicted_target_, new_states_lstm = self.model(event_frame1, prev_states_lstm)
             self.su2.deregister_hooks()
+ 
+            target = item['depth_image'].to(self.gpu)
 
-            target = item['depth_events0'].to(self.gpu)
-
-            loss += self.calculate_loss(self.su1.store_tensors.values(), self.su2.store_tensors.values())
-            self.su1.clear_tensors()
-            self.su2.clear_tensors()
-            
             prev_states_lstm = new_states_lstm
+
+        loss += self.calculate_loss(self.su1.store_tensors, self.su2.store_tensors)
+        self.su1.clear_tensors()
+        self.su2.clear_tensors()
 
         return loss
 
 
     def calculate_loss(self, t, t_shift):
         total = perturbation_shift_loss(t, t_shift)
-        self.su.clear_tensors()
         return total
 
     
@@ -404,7 +408,6 @@ class E2DepthPerturbationTuner(E2DEPTHTrainer):
         total_metrics = np.zeros(len(self.metrics))
         for batch_idx, sequence in enumerate(self.data_loader):
 
-            print( sequence[0].keys() ) #['events0'] )
 
             self.optimizer.zero_grad()
             loss = self.forward_pass_sequence(sequence)

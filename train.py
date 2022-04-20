@@ -1,8 +1,6 @@
-import json, os ,argparse, logging
-import torch
 import torch.nn as nn
-from data_fetchers.continuous_event_datasets import SequenceDatasetFactory
-from data_fetchers.dataset import SequenceSynchronizedFramesEventsDataset
+from data_fetchers.dataset_factory import SequenceDatasetFactory
+# from data_fetchers.dataset_legacy import SequenceSynchronizedFramesEventsDataset
 from .model.model import E2VIDRecurrent
 from .trainer import trainer
 
@@ -50,7 +48,7 @@ def finetune(config):
 
     #e2depth train dataloader
 #    dataset = SequenceSynchronizedFramesEventsDataset(base_folder=config["trainer"]["base_dir"], event_folder=config["trainer"]["event_dir"], depth_folder = config["trainer"]["depth_dir"], dataset_type='shifttrain')
-    dataset = SequenceDatasetFactory.createSyncFrEvSh(base_folder='/home/sankeerth/ev/depth_proj/data/test/', event_folder='events/data/', depth_folder = 'depth/data/', frame_folder='rgb/frames/')
+    dataset = SequenceDatasetFactory.createSeqSyncFED(base_folder='/home/sankeerth/ev/depth_proj/data/test/', event_folder='events/data/', depth_folder = 'depth/data/', frame_folder='rgb/frames/')
     dataloader = DataLoader(dataset)
     # validation_dataset = ContinuousEventsDataset(base_folder=config["validater"]["base_dir"], event_folder=config["validater"]["event_dir"],\
     #         width=346, height=260, window_size = config["validater"]['window_size'], time_shift = config["validater"]['time_shift'])
