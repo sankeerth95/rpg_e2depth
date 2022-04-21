@@ -1,6 +1,6 @@
 import torch
 from ..model.model import *
-from incr_modules.fenced_module_sparse import E2VIDRecurrentIncr
+from incr_modules.fenced_module_masked import E2VIDRecurrentIncr
 
 def load_model(path_to_model, config_dict = {}):
     print('Loading model {}...'.format(path_to_model))
